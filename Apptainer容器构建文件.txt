@@ -1,0 +1,94 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%labels
+    Author Binrui Zheng
+    Version v1.0
+
+%environment
+    # 设置 PATH 和 Conda/Mamba 环境
+    export PATH=/opt/conda/envs/rna_env/bin:/opt/conda/bin:/opt/scripts:$PATH
+    export CONDA_DEFAULT_ENV=rna_env
+    export CONDA_PREFIX=/opt/conda/envs/rna_env
+    export MAMBA_ROOT_PREFIX=/opt/conda
+
+%files
+    # 复制本地脚本到容器中 
+    /home/data/t210528/scripts/* opt/scripts/
+
+%post
+    set -ex  # 启用错误检查和命令回显
+
+    echo "===== 设置时区为 America/New_York 避免交互提示 ====="
+    ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
+    echo "America/New_York" > /etc/timezone
+
+    echo "===== 安装基础依赖工具并修复 libarchive.so.20 的链接问题 ====="
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates libarchive-tools && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libarchive.so.13 /usr/lib/x86_64-linux-gnu/libarchive.so.20
+
+    echo "===== 安装 Miniconda3 ====="
+    curl -o /tmp/miniconda.sh https://mirrors.pku.edu.cn/anaconda/miniconda/Miniconda3-py39_24.9.2-0-Linux-x86_64.sh
+    bash /tmp/miniconda.sh -b -p /opt/conda
+    rm /tmp/miniconda.sh
+    export PATH=/opt/conda/bin:$PATH
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    
+    echo "===== 配置 Conda ====="
+    conda config --add channels conda-forge
+    conda config --add channels bioconda
+    conda config --set channel_priority flexible
+    conda config --set remote_max_retries 20
+    conda config --set remote_connect_timeout_secs 120
+    conda config --set remote_read_timeout_secs 120
+
+    echo "===== 创建新的 Conda 环境：rna_env ====="
+    # 创建一个新的 Conda 环境，包含 Python 和 R 的基础支持
+    conda create -n rna_env python=3.9.10 r-base=4.3.3 --yes --quiet
+
+    echo "===== 使用 Conda 安装 Bioconductor来源 R包及模式作物注释包 ====="
+    for pkg in clusterprofiler dose annotationdbi annotationhub complexheatmap deseq2 \
+               gseabase ballgown biomart edger enrichplot \
+               fgsea genefilter org.Mmu.eg.db org.Ag.eg.db org.At.tair.db org.Bt.eg.db org.Ce.eg.db \
+               org.Cf.eg.db org.Dm.eg.db org.Dr.eg.db org.EcK12.eg.db org.EcSakai.eg.db \
+               org.Gg.eg.db org.Hs.eg.db org.Mm.eg.db \
+               org.Pt.eg.db org.Rn.eg.db org.Sc.sgd.db org.Ss.eg.db org.Xl.eg.db; do
+        echo "通过 Conda 安装 Bioconductor 包: $pkg"
+        conda install -n rna_env "bioconductor-$pkg" --yes --quiet || { echo "$pkg Conda 安装失败"; exit 1; }
+    done
+
+    echo "===== 使用 Conda 安装 CRAN来源 R包 ====="
+    for pkg in goplot rcolorbrewer rflptools upsetr devtools \
+               factoextra ggpubr ggrepel gplots ggstatsplot \
+               reshape2 tidyverse circlize igraph ggraph patchwork viridis ggfun; do
+        echo "安装 CRAN 包: $pkg"
+        conda install -n rna_env "r-$pkg" --yes --quiet || { echo "$pkg 安装失败"; exit 1; }
+    done
+
+    # 创建存放基因注释包文件夹
+    mkdir -p /opt/annotationhub
+    # 下载并安装水稻基因注释包
+    echo "===== 下载并安装水稻基因注释包 ====="
+    curl -o /opt/annotationhub/org.Oryza_sativa_Japonica_Group.eg.sqlite https://bioconductorhubs.blob.core.windows.net/annotationhub/ncbi/uniprot/3.20/org.Oryza_sativa_Japonica_Group.eg.sqlite || { echo "水稻基因注释包下载失败"; exit 1; }
+
+    # 下载并安装玉米基因注释包
+    echo "===== 下载并安装玉米基因注释包 ====="
+    curl -o /opt/annotationhub/org.Zea_mays.eg.sqlite https://bioconductorhubs.blob.core.windows.net/annotationhub/ncbi/uniprot/3.18/org.Zea_mays.eg.sqlite || { echo "玉米基因注释包下载失败"; exit 1; }
+    
+    echo "===== 使用 Conda 安装 RNA-seq 上游工具 ====="
+    for tool in agat fastqc fastp hisat2 stringtie samtools multiqc snakemake subread; do
+        echo "安装 RNA-seq 工具: $tool"
+        conda install -n rna_env "$tool" --yes --quiet || { echo "$tool 安装失败"; exit 1; }
+    done
+    
+    echo "===== 使用 Conda 安装 Python 库 ====="
+    for tool in pandas numpy; do
+        echo "安装 Python 库: $tool"
+        conda install -n rna_env "$tool" --yes --quiet || { echo "$tool 安装失败"; exit 1; }
+    done
+
+    # 清理 Conda 缓存和系统临时文件以减小体积
+    echo "===== 清理 Conda 缓存和系统临时文件 =====" && \
+    conda clean --all --yes && \
+    apt-get clean
