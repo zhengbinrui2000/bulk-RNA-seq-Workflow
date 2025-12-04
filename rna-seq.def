@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%labels
+    Author Binrui Zheng
+    Version v2.1 (Optimized with file copy)
+
+%environment
+    # 设置 PATH 和 Conda 环境
+    # /opt/scripts 已加入 PATH，复制到此处的脚本可直接执行
+    export PATH=/opt/conda/envs/rna_env/bin:/opt/conda/bin:/opt/scripts:$PATH
+    export CONDA_DEFAULT_ENV=rna_env
+    export CONDA_PREFIX=/opt/conda/envs/rna_env
+    export CONDA_ROOT_PREFIX=/opt/conda
+
+%files
+    # 将宿主机的 /home/data/t210528/scripts 目录复制到容器的 /opt/ 目录下
+    # 容器内最终路径为 /opt/scripts
+    /home/data/t210528/scripts    /opt/
+
+%post
+    set -ex  # 启用错误检查和命令回显
+
+    # --- 为了可读性，将软件包列表定义为变量 ---
+    BIOCONDUCTOR_PKGS="bioconductor-clusterprofiler bioconductor-dose bioconductor-annotationdbi bioconductor-annotationhub bioconductor-complexheatmap bioconductor-deseq2 bioconductor-gseabase bioconductor-ballgown bioconductor-biomart bioconductor-edger bioconductor-enrichplot bioconductor-fgsea bioconductor-genefilter bioconductor-org.at.tair.db bioconductor-org.hs.eg.db bioconductor-org.mmu.eg.db bioconductor-org.ag.eg.db bioconductor-org.bt.eg.db bioconductor-org.ce.eg.db bioconductor-org.cf.eg.db bioconductor-org.dm.eg.db bioconductor-org.dr.eg.db bioconductor-org.eck12.eg.db bioconductor-org.ecsakai.eg.db bioconductor-org.mm.eg.db bioconductor-org.pt.eg.db bioconductor-org.rn.eg.db bioconductor-org.sc.sgd.db bioconductor-org.ss.eg.db bioconductor-org.xl.eg.db bioconductor-org.gg.eg.db"
+    
+    CRAN_PKGS="r-goplot r-rcolorbrewer r-rflptools r-upsetr r-devtools r-factoextra r-ggpubr r-ggrepel r-gplots r-ggstatsplot r-tidyr r-tidyverse r-circlize r-igraph r-ggraph r-patchwork r-viridis r-ggfun r-showtext"
+    
+    RNASEQ_TOOLS="fastqc fastp star rsem multiqc subread"
+    
+    PYTHON_LIBS="pandas numpy"
+
+    echo "===== 设置时区并安装系统依赖 ====="
+    ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
+    echo "America/New_York" > /etc/timezone
+    
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget \
+        ca-certificates \
+        fontconfig
+    
+    echo "===== 安装 Microsoft Core Fonts ====="
+    # 预先接受 EULA 许可，避免交互
+    echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections
+    apt-get install -y ttf-mscorefonts-installer
+    
+    echo "===== 刷新系统字体缓存 ====="
+    fc-cache -f -v
+        
+    echo "===== 安装 Miniconda3 ====="
+    # 使用官方 repo.anaconda.com 的链接，更稳定
+    wget --quiet -O /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-py39_24.9.2-0-Linux-x86_64.sh
+    bash /tmp/miniconda.sh -b -p /opt/conda
+    rm /tmp/miniconda.sh
+    
+    # 使 conda 命令在 %post 的后续部分可用
+    export PATH=/opt/conda/bin:$PATH
+    
+    echo "===== 配置 Conda ====="
+    conda config --add channels conda-forge
+    conda config --add channels bioconda
+    conda config --set channel_priority flexible
+    conda config --set remote_max_retries 20
+    conda config --set remote_connect_timeout_secs 120
+    conda config --set remote_read_timeout_secs 120
+
+    echo "===== 创建 Conda 环境并一次性安装所有软件包 ====="
+    # 将所有软件包放在一个 `conda create` 命令中，以实现最高效的依赖解析
+    conda create -n rna_env --yes --quiet \
+        python=3.9.10 \
+        r-base=4.3.3 \
+        $BIOCONDUCTOR_PKGS \
+        $CRAN_PKGS \
+        $RNASEQ_TOOLS \
+        $PYTHON_LIBS
+
+    echo "===== 下载基因注释包以供离线使用 ====="
+    mkdir -p /opt/annotationhub
+    wget -O /opt/annotationhub/org.Oryza_sativa_Japonica_Group.eg.sqlite https://mghp.osn.xsede.org/bir190004-bucket01/AnnotationHub/ncbi/uniprot/3.21/org.Oryza_sativa_Japonica_Group.eg.sqlite || { echo "水稻基因注释包下载失败"; exit 1; }
+    wget -O /opt/annotationhub/org.Zea_mays.eg.sqlite https://bioconductorhubs.blob.core.windows.net/annotationhub/ncbi/uniprot/3.18/org.Zea_mays.eg.sqlite || { echo "玉米基因注释包下载失败"; exit 1; }
+    
+    echo "===== 清理缓存以减小镜像体积 ====="
+    conda clean --all --yes
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
